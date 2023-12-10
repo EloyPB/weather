@@ -42,16 +42,40 @@ for data_file in data_files:
     dfs.append(pd.read_csv(f'{data_path}/{data_file}', delim_whitespace=True, names=column_names))
 data = pd.concat(dfs, ignore_index=True)
 
+# drop rows with missing temperature readings
+data = data[data['T_MONTHLY_MEAN'] != -9999]
+
+# transform LST_YRMO into year and month columns
+data['LST_YRMO'] = pd.to_datetime(data['LST_YRMO'], format='%Y%m')
+data['YEAR'] = data['LST_YRMO'].dt.year
+data['MONTH'] = data['LST_YRMO'].dt.month
 
 # find distribution of start dates
-start_dates = []
 wbans = data['WBANNO'].unique()
-for wban in wbans:
+start_years = np.zeros(wbans.size)
+for station_num, wban in enumerate(wbans):
     first_index = data.loc[data['WBANNO'] == wban].index[0]
-    start_dates.append(data.loc[first_index, 'LST_YRMO'])
+    start_years[station_num] = data.loc[first_index, 'YEAR']
 
-start_years = [int(str(start_date)[:4]) for start_date in start_dates]
 plt.hist(start_years, bins=np.arange(min(start_years)-0.5, max(start_years)+0.5, 1))
-plt.show()
 
-print()
+# subtract baseline temperatures
+baseline_year = 2005
+ok_wbans = wbans[start_years <= baseline_year - 1].tolist()
+baseline = data.loc[(data['YEAR'] == baseline_year) & (data['WBANNO'].isin(ok_wbans)), ['WBANNO', 'LST_YRMO', 'MONTH', 'T_MONTHLY_MEAN']]
+baseline.columns = ['WBANNO', 'LST_YRMO', 'MONTH', 'T_MONTHLY_MEAN_BASELINE']
+
+merged_data = data[data['YEAR'] > baseline_year].merge(baseline, on=['WBANNO', 'MONTH'], how='right')
+merged_data['ANOMALY'] = merged_data['T_MONTHLY_MEAN'] - merged_data['T_MONTHLY_MEAN_BASELINE']
+
+average_anomaly = merged_data.groupby(['YEAR', 'MONTH'])['ANOMALY'].mean().reset_index()
+average_anomaly['DATE'] = pd.to_datetime(average_anomaly[['YEAR', 'MONTH']].assign(DAY=1))
+
+plt.figure()
+plt.plot(average_anomaly['DATE'],  average_anomaly['ANOMALY'])
+
+coefficients = np.polyfit(np.arange(0.0, average_anomaly.shape[0]), average_anomaly['ANOMALY'].values, 1)
+poly = np.poly1d(coefficients)
+plt.plot(average_anomaly['DATE'], poly(np.arange(0.0, average_anomaly.shape[0])))
+
+plt.show()
